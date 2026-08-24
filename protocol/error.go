@@ -29,13 +29,6 @@ var MultipleActivatedFunctionsError = &IEC104ProtocolError{msg: "multiple activa
 
 /*---------------------------------------------------*/
 
-func new104Error(err error) *IEC104ProtocolError {
-	if err == nil {
-		return nil
-	}
-	return &IEC104ProtocolError{msg: err.Error()}
-}
-
 var _ error = (*IEC104ProtocolError)(nil)
 
 // IEC104ProtocolError 流程错误

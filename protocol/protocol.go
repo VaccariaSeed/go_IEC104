@@ -175,12 +175,15 @@ func (p *IEC104Protocol) Decode(buf *bufio.Reader) (err error) {
 	}
 	//获取ASDU
 	if p.asdu, err = ASDU.ObtainASDU(p.ObtainTypeIdent()); err != nil {
-		return new104Error(err)
+		return &IEC104ProtocolError{msg: err.Error()}
 	}
 	p.asdu.BindLength(p.vsq.number, p.ioaSize, p.ioaOrder)
 	//解析ASDU
 	err = p.asdu.Decode(p.vsq.sq, read_buf.NewReadBuf(data[:]))
-	return new104Error(err)
+	if err == nil {
+		return nil
+	}
+	return &IEC104ProtocolError{msg: err.Error()}
 }
 
 func (p *IEC104Protocol) ObtainASDU() ASDU.ASDUer {
