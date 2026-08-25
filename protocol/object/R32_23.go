@@ -22,7 +22,7 @@ type R32_23 struct {
 // BuildByFloat32 通过 float32 构建
 func (r *R32_23) BuildByFloat32(value float32) *R32_23 {
 	r.data = make([]byte, 4)
-	binary.BigEndian.PutUint32(r.data, math.Float32bits(value))
+	binary.LittleEndian.PutUint32(r.data, math.Float32bits(value))
 	return r
 }
 
@@ -32,9 +32,9 @@ func (r *R32_23) BuildByData(data []byte) *R32_23 {
 	return r
 }
 
-// ObtainFloat32 获取短浮点值
+// ObtainFloat32 获取短浮点值（线上低字节在前）
 func (r *R32_23) ObtainFloat32() float32 {
-	return math.Float32frombits(binary.BigEndian.Uint32(r.data))
+	return math.Float32frombits(binary.LittleEndian.Uint32(r.data))
 }
 
 func (r *R32_23) Copy() Objector {

@@ -3,6 +3,7 @@ package protocol
 import (
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 )
 
@@ -15,6 +16,9 @@ const (
 	DefaultK = 12
 	DefaultW = 8
 )
+
+// DefaultT2 收 I 后未确认则发 S 的默认超时
+const DefaultT2 = 10 * time.Second
 
 // FrameFormat APCI 控制域格式
 type FrameFormat uint8
@@ -53,6 +57,18 @@ const (
 	ActionSendS            // 发 S 确认，使用 ReplyNR
 	ActionSendU            // 发 U，使用 ReplyU
 	ActionDie              // 严重错误，应断开
+)
+
+// Seq 致命错误（ActionDie），可用 errors.Is 区分
+var (
+	// ErrUnknownFrameFormat 控制域格式不是 I/S/U（OnRecv 的 Format 非法）
+	ErrUnknownFrameFormat = errors.New("unknown frame format")
+	// ErrInvalidPeerNR 对端 N(R) 不在合法确认区间 (V(A), V(S)]（S 帧或 I 帧捎带）
+	ErrInvalidPeerNR = errors.New("invalid peer N(R)")
+	// ErrIFrameBeforeStart 数据传输未启用（未 STARTDT / 未 EnableData）就收到 I 帧
+	ErrIFrameBeforeStart = errors.New("I-frame before STARTDT")
+	// ErrOutOfOrderNS 对端 N(S) 超前于本端 V(R)（丢帧/乱序；旧帧重传不会触发）
+	ErrOutOfOrderNS = errors.New("out-of-order N(S)")
 )
 
 // Result OnRecv / Tick / PrepareSendI 的结果
@@ -96,6 +112,7 @@ func (c *Config) normalize() {
 //   - 收到合法 S → 只更新确认窗口，不回
 //   - 收 I 达 w 或 Tick 触发 t2 → 建议 SendS
 type Seq struct {
+	mu  sync.Mutex
 	cfg Config
 
 	vs uint16 // V(S) 下一发送 N(S)
@@ -118,6 +135,8 @@ func NewSeq(cfg Config) *Seq {
 
 // Reset 重连或新会话时清零
 func (s *Seq) Reset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.vs = 0
 	s.vr = 0
 	s.va = 0
@@ -129,28 +148,41 @@ func (s *Seq) Reset() {
 }
 
 // VS / VR / VA / Unacked 只读快照
-func (s *Seq) VS() uint16        { return s.vs }
-func (s *Seq) VR() uint16        { return s.vr }
-func (s *Seq) VA() uint16        { return s.va }
-func (s *Seq) Unacked() int      { return s.unacked }
-func (s *Seq) DataEnabled() bool { return s.dataEnabled }
+func (s *Seq) VS() uint16 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.vs
+}
+func (s *Seq) VR() uint16 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.vr
+}
+func (s *Seq) VA() uint16 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.va
+}
+func (s *Seq) Unacked() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.unacked
+}
+func (s *Seq) DataEnabled() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.dataEnabled
+}
 
 // OnRecv 处理收到的控制域信息，返回是否要回复以及回复用的序号/U 功能。
 func (s *Seq) OnRecv(f RecvFrame) Result {
-	switch f.Format {
-	case FormatU:
-		return s.onU(f.U)
-	case FormatS:
-		return s.onS(f.NR)
-	case FormatI:
-		return s.onI(f.NS, f.NR, time.Now())
-	default:
-		return Result{Kind: ActionDie, Err: fmt.Errorf("unknown frame format %d", f.Format)}
-	}
+	return s.OnRecvAt(f, time.Now())
 }
 
 // OnRecvAt 同 OnRecv，可注入时间（测 t2）
 func (s *Seq) OnRecvAt(f RecvFrame, now time.Time) Result {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	switch f.Format {
 	case FormatU:
 		return s.onU(f.U)
@@ -159,7 +191,7 @@ func (s *Seq) OnRecvAt(f RecvFrame, now time.Time) Result {
 	case FormatI:
 		return s.onI(f.NS, f.NR, now)
 	default:
-		return Result{Kind: ActionDie, Err: fmt.Errorf("unknown frame format %d", f.Format)}
+		return Result{Kind: ActionDie, Err: fmt.Errorf("%w: %d", ErrUnknownFrameFormat, f.Format)}
 	}
 }
 
@@ -199,7 +231,7 @@ func (s *Seq) onI(ns, nr uint16, now time.Time) Result {
 	nr %= SeqMod
 
 	if !s.dataEnabled {
-		return Result{Kind: ActionDie, Err: errors.New("I-frame before STARTDT")}
+		return Result{Kind: ActionDie, Err: ErrIFrameBeforeStart}
 	}
 
 	// 1) 先处理对方 N(R)：确认我方发送
@@ -228,7 +260,7 @@ func (s *Seq) onI(ns, nr uint16, now time.Time) Result {
 		// ns > vr：乱序/丢帧
 		return Result{
 			Kind: ActionDie,
-			Err:  fmt.Errorf("out-of-order N(S)=%d, expect %d", ns, s.vr),
+			Err:  fmt.Errorf("%w: N(S)=%d, expect %d", ErrOutOfOrderNS, ns, s.vr),
 		}
 	}
 
@@ -251,7 +283,7 @@ func (s *Seq) applyPeerNR(nr uint16) error {
 		if seqBefore(nr, s.va) || nr == s.va {
 			return nil // 落后，忽略
 		}
-		return fmt.Errorf("invalid peer N(R)=%d, V(A)=%d V(S)=%d", nr, s.va, s.vs)
+		return fmt.Errorf("%w: N(R)=%d, V(A)=%d V(S)=%d", ErrInvalidPeerNR, nr, s.va, s.vs)
 	}
 	// 未确认数量减少
 	acked := seqDistance(s.va, nr)
@@ -272,6 +304,8 @@ func (s *Seq) markAcked() {
 // PrepareSendI 分配发送 I 帧用的 N(S)/N(R)。窗口满返回错误。
 // 调用方真正发出成功后应再调 CommitSendI；若你希望「分配即占用」，也可直接 Commit。
 func (s *Seq) PrepareSendI() (SendI, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if !s.dataEnabled {
 		return SendI{}, errors.New("data transfer not enabled")
 	}
@@ -284,6 +318,8 @@ func (s *Seq) PrepareSendI() (SendI, error) {
 
 // CommitSendI 在 I 帧成功写出后调用：推进 V(S)、占用窗口；若捎带确认则清接收确认计数。
 func (s *Seq) CommitSendI() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.vs = (s.vs + 1) % SeqMod
 	s.unacked++
 	s.markAcked() // 捎带 N(R)=V(R) 视为已确认接收方向
@@ -291,6 +327,8 @@ func (s *Seq) CommitSendI() {
 
 // PrepareSendS 若有需要确认的接收，返回应使用的 N(R)；无需确认返回 ok=false。
 func (s *Seq) PrepareSendS() (nr uint16, ok bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if !s.needAck && s.recvSinceAck == 0 {
 		return 0, false
 	}
@@ -299,6 +337,8 @@ func (s *Seq) PrepareSendS() (nr uint16, ok bool) {
 
 // CommitSendS 在 S 帧成功写出后调用
 func (s *Seq) CommitSendS() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.markAcked()
 }
 
@@ -306,6 +346,8 @@ func (s *Seq) CommitSendS() {
 // cfg.T2==0 时本方法不产生 SendS（由上层按 w 或自行决定）。
 // 发出 S 成功后请调用 CommitSendS。
 func (s *Seq) Tick(now time.Time) Result {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.cfg.T2 <= 0 || !s.needAck || s.lastRecvI.IsZero() {
 		return Result{Kind: ActionNone}
 	}
@@ -316,10 +358,18 @@ func (s *Seq) Tick(now time.Time) Result {
 }
 
 // EnableData 本端作为主站发出 STARTDT 后，在收到 con 前也可先置位；一般靠 OnRecv(UStartDTCon/Act) 自动置位。
-func (s *Seq) EnableData() { s.dataEnabled = true }
+func (s *Seq) EnableData() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.dataEnabled = true
+}
 
 // DisableData 停止数据传输
-func (s *Seq) DisableData() { s.dataEnabled = false }
+func (s *Seq) DisableData() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.dataEnabled = false
+}
 
 // ---------- 模 32768 区间工具 ----------
 

@@ -21,13 +21,13 @@ func (t *TSC) Decode(bf *read_buf.ReadBuf) (err error) {
 	if err != nil {
 		return
 	}
-	t.counter = binary.BigEndian.Uint16(data)
+	t.counter = binary.LittleEndian.Uint16(data)
 	return
 }
 
 func (t *TSC) Encode() (frame []byte, err error) {
 	frame = make([]byte, 2)
-	binary.BigEndian.PutUint16(frame, t.counter)
+	binary.LittleEndian.PutUint16(frame, t.counter)
 	return frame, nil
 }
 

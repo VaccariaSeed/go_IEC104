@@ -35,15 +35,15 @@ func (s *SCD) Decode(bf *read_buf.ReadBuf) (err error) {
 	if err != nil {
 		return
 	}
-	s.status = binary.BigEndian.Uint16(data[0:2])
-	s.change = binary.BigEndian.Uint16(data[2:4])
+	s.status = binary.LittleEndian.Uint16(data[0:2])
+	s.change = binary.LittleEndian.Uint16(data[2:4])
 	return
 }
 
 func (s *SCD) Encode() (frame []byte, err error) {
 	frame = make([]byte, 4)
-	binary.BigEndian.PutUint16(frame[0:2], s.status)
-	binary.BigEndian.PutUint16(frame[2:4], s.change)
+	binary.LittleEndian.PutUint16(frame[0:2], s.status)
+	binary.LittleEndian.PutUint16(frame[2:4], s.change)
 	return frame, nil
 }
 

@@ -41,7 +41,7 @@ func (b *BCR) Decode(bf *read_buf.ReadBuf) (err error) {
 	if err != nil {
 		return
 	}
-	b.counter = int32(binary.BigEndian.Uint32(data[0:4]))
+	b.counter = int32(binary.LittleEndian.Uint32(data[0:4]))
 	b.sq = data[4] & 0x1F
 	b.cy = (data[4] >> 5) & 0x01
 	b.ca = (data[4] >> 6) & 0x01
@@ -51,7 +51,7 @@ func (b *BCR) Decode(bf *read_buf.ReadBuf) (err error) {
 
 func (b *BCR) Encode() (frame []byte, err error) {
 	frame = make([]byte, 5)
-	binary.BigEndian.PutUint32(frame[0:4], uint32(b.counter))
+	binary.LittleEndian.PutUint32(frame[0:4], uint32(b.counter))
 	frame[4] = (b.sq & 0x1F) | ((b.cy & 0x01) << 5) | ((b.ca & 0x01) << 6) | ((b.iv & 0x01) << 7)
 	return frame, nil
 }

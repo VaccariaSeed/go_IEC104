@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -54,6 +55,7 @@ type IEC104Protocol struct {
 	*controlRegion           //控制域
 	*dataUnitIdentifier      //数据单元标识
 	asdu                ASDU.ASDUer
+	lastAPDU            []byte // 最近一次 Decode 成功的完整 APDU
 }
 
 func (p *IEC104Protocol) EncodeToHexString() (frame string, err error) {
@@ -114,7 +116,16 @@ func (p *IEC104Protocol) ObtainSize() (cotSize, publicAddrSize byte) {
 	return p.cotSize, p.publicAddrSize
 }
 
+// LastAPDU 最近一次 Decode 成功的完整 APDU（拷贝）；无则 nil
+func (p *IEC104Protocol) LastAPDU() []byte {
+	if len(p.lastAPDU) == 0 {
+		return nil
+	}
+	return append([]byte(nil), p.lastAPDU...)
+}
+
 func (p *IEC104Protocol) Decode(buf *bufio.Reader) (err error) {
+	p.lastAPDU = nil
 	if err = binary.Read(buf, binary.BigEndian, &p.startChar); err != nil {
 		return err
 	}
@@ -129,11 +140,19 @@ func (p *IEC104Protocol) Decode(buf *bufio.Reader) (err error) {
 	if p.Length > maxLength || p.Length < defaultLength {
 		return LengthOutMaxOrTooMinError
 	}
-	//解析控制域并进行一次强校验
-	var ctrl [4]byte
-	if err = binary.Read(buf, binary.BigEndian, &ctrl); err != nil {
+	// 一次读满 Length 字节，拼完整 APDU，再从缓冲解析（保证与线上一致）
+	body := make([]byte, p.Length)
+	if err = binary.Read(buf, binary.BigEndian, &body); err != nil {
 		return err
 	}
+	apdu := make([]byte, 0, 2+len(body))
+	apdu = append(apdu, startChar, p.Length)
+	apdu = append(apdu, body...)
+
+	if len(body) < defaultLength {
+		return FrameLengthError
+	}
+	ctrl := body[:4]
 	p.controlRegion = &controlRegion{region1: ctrl[0], region2: ctrl[1], region3: ctrl[2], region4: ctrl[3]}
 	var ft FrameType
 	if ft, err = p.ObtainFrameType(); err != nil {
@@ -157,20 +176,24 @@ func (p *IEC104Protocol) Decode(buf *bufio.Reader) (err error) {
 		}
 	}
 	if ft == SFrame || ft == UFrame {
+		p.lastAPDU = apdu
 		return nil
 	}
-	//读取ASDU完成，开始解析数据单元标识
-	err = p.dataUnitIdentifier.decode(buf)
+	// I 帧：从控制域之后解析数据单元标识与 ASDU
+	rest := body[4:]
+	r := bufio.NewReader(bytes.NewReader(rest))
+	err = p.dataUnitIdentifier.decode(r)
 	if err != nil {
 		return err
 	}
 	dataLength := p.Length - defaultLength - 2 - p.cotSize - p.publicAddrSize
 	//如果没有有效数据就直接返回
 	if dataLength == 0 {
+		p.lastAPDU = apdu
 		return nil
 	}
 	data := make([]byte, dataLength)
-	if err = binary.Read(buf, binary.BigEndian, &data); err != nil {
+	if err = binary.Read(r, binary.BigEndian, &data); err != nil {
 		return err
 	}
 	//获取ASDU
@@ -180,10 +203,11 @@ func (p *IEC104Protocol) Decode(buf *bufio.Reader) (err error) {
 	p.asdu.BindLength(p.vsq.number, p.ioaSize, p.ioaOrder)
 	//解析ASDU
 	err = p.asdu.Decode(p.vsq.sq, read_buf.NewReadBuf(data[:]))
-	if err == nil {
-		return nil
+	if err != nil {
+		return &IEC104ProtocolError{msg: err.Error()}
 	}
-	return &IEC104ProtocolError{msg: err.Error()}
+	p.lastAPDU = apdu
+	return nil
 }
 
 func (p *IEC104Protocol) ObtainASDU() ASDU.ASDUer {

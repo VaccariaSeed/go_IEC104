@@ -14,25 +14,27 @@ func newIOA(size byte, ioaOrder binary.ByteOrder) *IOA {
 	return &IOA{size: size, ioaOrder: ioaOrder}
 }
 
-// BuildIOA 用来编码
+// BuildIOA 用来编码（size 为 1/2/3；addr 按字节宽度截断）
 func BuildIOA(size byte, ioaOrder binary.ByteOrder, addr uint32) *IOA {
-	addrVal := uint16(addr)
-	buf := make([]byte, 2)
-	if ioaOrder == binary.LittleEndian {
-		binary.LittleEndian.PutUint16(buf, addrVal)
-	} else {
-		binary.BigEndian.PutUint16(buf, addrVal)
-	}
-	var data []byte
-	if size == 1 {
-		data = []byte{byte(addr)}
-	} else if size == 2 {
-		data = buf
-	} else {
+	data := make([]byte, size)
+	switch size {
+	case 1:
+		data[0] = byte(addr)
+	case 2:
 		if ioaOrder == binary.LittleEndian {
-			data = []byte{buf[0], buf[1], 0x00}
+			binary.LittleEndian.PutUint16(data, uint16(addr))
 		} else {
-			data = []byte{0x00, buf[0], buf[1]}
+			binary.BigEndian.PutUint16(data, uint16(addr))
+		}
+	default: // 3
+		if ioaOrder == binary.LittleEndian {
+			data[0] = byte(addr)
+			data[1] = byte(addr >> 8)
+			data[2] = byte(addr >> 16)
+		} else {
+			data[0] = byte(addr >> 16)
+			data[1] = byte(addr >> 8)
+			data[2] = byte(addr)
 		}
 	}
 
@@ -42,7 +44,6 @@ func BuildIOA(size byte, ioaOrder binary.ByteOrder, addr uint32) *IOA {
 		data:     data,
 		step:     0,
 	}
-
 }
 
 // IOA 信息对象地址
@@ -86,9 +87,9 @@ func (i *IOA) obtainAddrBE() uint32 {
 	case 2:
 		return uint32(binary.BigEndian.Uint16(i.data)) + i.step
 	default:
-		return uint32(i.data[2]) |
+		return (uint32(i.data[2]) |
 			uint32(i.data[1])<<8 |
-			uint32(i.data[0])<<16 + i.step
+			uint32(i.data[0])<<16) + i.step
 	}
 }
 

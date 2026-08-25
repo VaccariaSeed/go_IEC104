@@ -20,13 +20,13 @@ func (f *FBP) Decode(bf *read_buf.ReadBuf) (err error) {
 	if err != nil {
 		return
 	}
-	f.pattern = binary.BigEndian.Uint16(data)
+	f.pattern = binary.LittleEndian.Uint16(data)
 	return
 }
 
 func (f *FBP) Encode() (frame []byte, err error) {
 	frame = make([]byte, 2)
-	binary.BigEndian.PutUint16(frame, f.pattern)
+	binary.LittleEndian.PutUint16(frame, f.pattern)
 	return frame, nil
 }
 

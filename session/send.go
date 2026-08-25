@@ -67,6 +67,7 @@ func (s *Session) sendI(ctx *protocol.FrameCtx) error {
 	if err != nil {
 		return err
 	}
+	s.notifySending(frame)
 	if _, err = conn.Write(frame); err != nil {
 		return err
 	}
@@ -89,6 +90,7 @@ func (s *Session) sendSFromCtx(ctx *protocol.FrameCtx) error {
 	if err != nil {
 		return err
 	}
+	s.notifySending(frame)
 	if _, err = conn.Write(frame); err != nil {
 		return err
 	}
@@ -111,6 +113,7 @@ func (s *Session) sendUFromCtx(ctx *protocol.FrameCtx) error {
 	if err != nil {
 		return err
 	}
+	s.notifySending(frame)
 	if _, err = conn.Write(frame); err != nil {
 		return err
 	}
@@ -130,6 +133,7 @@ func (s *Session) sendS(nr uint16) error {
 	}
 
 	frame := protocol.EncodeSFrame(nr)
+	s.notifySending(frame)
 	if _, err := conn.Write(frame); err != nil {
 		return err
 	}
@@ -150,13 +154,22 @@ func (s *Session) sendU(u protocol.UFunc) error {
 	}
 
 	frame := protocol.EncodeUFrame(u)
+	s.notifySending(frame)
 	if _, err := conn.Write(frame); err != nil {
 		return err
 	}
 	return nil
 }
 
-// applySeqResult 根据 Seq 建议自动回 S/U；严重错误则关闭连接
+// notifySending Write 前通知完整 APDU（拷贝）
+func (s *Session) notifySending(frame []byte) {
+	if s.handler == nil || len(frame) == 0 {
+		return
+	}
+	s.handler.OnAPDUSending(s, append([]byte(nil), frame...))
+}
+
+// applySeqResult 根据 Seq 建议自动回 S/U；严重错误则按回调决定是否关闭连接
 func (s *Session) applySeqResult(res protocol.Result) bool {
 	switch res.Kind {
 	case protocol.ActionSendS:
@@ -164,7 +177,13 @@ func (s *Session) applySeqResult(res protocol.Result) bool {
 	case protocol.ActionSendU:
 		_ = s.sendU(res.ReplyU)
 	case protocol.ActionDie:
-		_ = s.Close()
+		shouldClose := true
+		if s.onSeqFatal != nil && s.conn != nil {
+			shouldClose = s.onSeqFatal(s.conn.RemoteAddr().String(), res.Err)
+		}
+		if shouldClose {
+			_ = s.Close()
+		}
 		return false
 	}
 	return true

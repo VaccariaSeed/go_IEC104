@@ -21,7 +21,7 @@ type SVA struct {
 // BuildByInt16 通过 int16 构建
 func (s *SVA) BuildByInt16(value int16) *SVA {
 	s.data = make([]byte, 2)
-	binary.BigEndian.PutUint16(s.data, uint16(value))
+	binary.LittleEndian.PutUint16(s.data, uint16(value))
 	return s
 }
 
@@ -31,9 +31,9 @@ func (s *SVA) BuildByData(data []byte) *SVA {
 	return s
 }
 
-// ObtainInt16 获取原始值
+// ObtainInt16 获取原始值（线上低字节在前）
 func (s *SVA) ObtainInt16() int16 {
-	return int16(binary.BigEndian.Uint16(s.data))
+	return int16(binary.LittleEndian.Uint16(s.data))
 }
 
 func (s *SVA) Copy() Objector {

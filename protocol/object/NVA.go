@@ -22,7 +22,7 @@ type NVA struct {
 // BuildByInt16 通过 int16 构建
 func (N *NVA) BuildByInt16(value int16) *NVA {
 	N.data = make([]byte, 2)
-	binary.BigEndian.PutUint16(N.data, uint16(value))
+	binary.LittleEndian.PutUint16(N.data, uint16(value))
 	return N
 }
 
@@ -50,9 +50,9 @@ func (N *NVA) BuildByFloat64(value float64) *NVA {
 	return N.BuildByInt16(int16(raw))
 }
 
-// ObtainInt16  获取原始值
+// ObtainInt16  获取原始值（线上低字节在前）
 func (N *NVA) ObtainInt16() int16 {
-	return int16(N.data[0])<<8 | int16(N.data[1])
+	return int16(binary.LittleEndian.Uint16(N.data))
 }
 
 // ObtainFloat64  获取规一化值

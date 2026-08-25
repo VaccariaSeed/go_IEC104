@@ -19,12 +19,12 @@ func (n *NOF) Decode(bf *read_buf.ReadBuf) (err error) {
 	if err != nil {
 		return
 	}
-	n.name = binary.BigEndian.Uint16(data)
+	n.name = binary.LittleEndian.Uint16(data)
 	return
 }
 func (n *NOF) Encode() (frame []byte, err error) {
 	frame = make([]byte, 2)
-	binary.BigEndian.PutUint16(frame, n.name)
+	binary.LittleEndian.PutUint16(frame, n.name)
 	return frame, nil
 }
 func (n *NOF) ObtainNOF() uint16 { return n.name }

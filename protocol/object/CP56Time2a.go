@@ -10,12 +10,14 @@ import (
 
 var _ Objector = (*CP56Time2a)(nil)
 
-// NewEmptyCP56Time2a 创建一个只有大小端的CP56Time2a
+// NewEmptyCP56Time2a 创建一个空 CP56Time2a。
+// ioaOrder 仅为与 ASDU 构造签名兼容而保留；线上时标毫秒固定为低字节在前，不跟随 IOA 端序。
 func NewEmptyCP56Time2a(ioaOrder binary.ByteOrder) *CP56Time2a {
 	return &CP56Time2a{order: ioaOrder, iv: true}
 }
 
-// BuildCP56Time2a 构建一个完整的CP56Time2a,zero就是当前时间
+// BuildCP56Time2a 构建完整 CP56Time2a；ts 为零则取当前时间。
+// ioaOrder 仅为 API 兼容保留，编码时标不使用该参数。
 func BuildCP56Time2a(ts time.Time, ioaOrder binary.ByteOrder) *CP56Time2a {
 	if ts.IsZero() {
 		ts = time.Now()
@@ -50,7 +52,7 @@ type CP56Time2a struct {
 	month       byte
 	year        byte
 	iv          bool
-	order       binary.ByteOrder
+	order       binary.ByteOrder // 保留字段；Encode/Decode 毫秒固定 LittleEndian
 }
 
 // ToTime 转成正常的时间戳
@@ -77,11 +79,8 @@ func (t *CP56Time2a) Decode(bf *read_buf.ReadBuf) (err error) {
 	if err != nil {
 		return
 	}
-	if t.order == binary.LittleEndian {
-		t.millisecond = uint16(frame[0]) | (uint16(frame[1]) << 8)
-	} else {
-		t.millisecond = uint16(frame[1]) | (uint16(frame[0]) << 8)
-	}
+	// 毫秒：IEC 固定低字节在前
+	t.millisecond = uint16(frame[0]) | (uint16(frame[1]) << 8)
 	if t.millisecond > 59999 {
 		return fmt.Errorf("millisecond value %d out of range (0-59999)", t.millisecond)
 	}
@@ -101,13 +100,8 @@ func (t *CP56Time2a) Encode() (frame []byte, err error) {
 		return nil, fmt.Errorf("millisecond value %d out of range (0-59999)", t.millisecond)
 	}
 	frame = make([]byte, 7)
-	if t.order == binary.LittleEndian {
-		frame[0] = byte(t.millisecond & 0xFF)
-		frame[1] = byte((t.millisecond >> 8) & 0xFF)
-	} else {
-		frame[0] = byte((t.millisecond >> 8) & 0xFF)
-		frame[1] = byte(t.millisecond & 0xFF)
-	}
+	frame[0] = byte(t.millisecond & 0xFF)
+	frame[1] = byte((t.millisecond >> 8) & 0xFF)
 	b2 := t.minute & 0x3F
 	if t.iv {
 		b2 |= 0x80

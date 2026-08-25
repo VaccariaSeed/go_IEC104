@@ -10,12 +10,14 @@ import (
 
 var _ Objector = (*CP24Time2a)(nil)
 
-// NewEmptyCP24Time2a 创建一个只有大小端的CP24Time2a
+// NewEmptyCP24Time2a 创建一个空 CP24Time2a。
+// ioaOrder 仅为 API 兼容保留；线上时标毫秒固定低字节在前。
 func NewEmptyCP24Time2a(ioaOrder binary.ByteOrder) *CP24Time2a {
 	return &CP24Time2a{order: ioaOrder, iv: true}
 }
 
-// BuildCP24Time2a 构建一个完整的CP24Time2a,zero,就是当前时间
+// BuildCP24Time2a 构建完整 CP24Time2a；ts 为零则取当前时间。
+// ioaOrder 仅为 API 兼容保留，编码时标不使用该参数。
 func BuildCP24Time2a(ts time.Time, ioaOrder binary.ByteOrder) *CP24Time2a {
 	if ts.IsZero() {
 		ts = time.Now()
@@ -45,7 +47,7 @@ type CP24Time2a struct {
 	millisecond uint16           //毫秒值
 	minute      byte             //分钟
 	iv          bool             // 无效标志 (Invalid): true=无效, false=有效
-	order       binary.ByteOrder //大小端，一般都是小端
+	order       binary.ByteOrder // 保留字段；Encode/Decode 毫秒固定 LittleEndian
 }
 
 // ToTime 转成正常的时间戳
@@ -69,16 +71,17 @@ func (t *CP24Time2a) ToTime() (ts *time.Time, iv bool) {
 		baseDate.Hour(),
 		int(t.minute),
 		int(seconds),
-		int(nanos), // 需要转换为 int
+		int(nanos),
 		baseDate.Location(),
 	)
-	return &toTime, true
+	return &toTime, false
 }
 
 func (t *CP24Time2a) Copy() Objector {
 	return &CP24Time2a{
 		millisecond: t.millisecond,
 		minute:      t.minute,
+		iv:          t.iv,
 		order:       t.order,
 	}
 }
@@ -88,20 +91,12 @@ func (t *CP24Time2a) Decode(bf *read_buf.ReadBuf) (err error) {
 	if err != nil {
 		return
 	}
-	// 第1-2字节: 解析毫秒 (根据大小端)
-	if t.order == binary.LittleEndian {
-		t.millisecond = uint16(frame[0]) | (uint16(frame[1]) << 8)
-	} else {
-		t.millisecond = uint16(frame[1]) | (uint16(frame[0]) << 8)
-	}
-	// 验证毫秒范围
+	t.millisecond = uint16(frame[0]) | (uint16(frame[1]) << 8)
 	if t.millisecond > 59999 {
 		return fmt.Errorf("millisecond value %d out of range (0-59999)", t.millisecond)
 	}
-	// 第3字节: 提取分钟和标志位
-	t.minute = frame[2] & 0x3F    // 低6位是分钟
-	t.iv = (frame[2] & 0x80) != 0 // bit7是无效标志
-	// 验证分钟范围
+	t.minute = frame[2] & 0x3F
+	t.iv = (frame[2] & 0x80) != 0
 	if t.minute > 59 {
 		return fmt.Errorf("minute value %d out of range (0-59)", t.minute)
 	}
@@ -109,34 +104,19 @@ func (t *CP24Time2a) Decode(bf *read_buf.ReadBuf) (err error) {
 }
 
 func (t *CP24Time2a) Encode() (frame []byte, err error) {
-	// 验证数据合法性
 	if t.millisecond > 59999 {
 		return nil, fmt.Errorf("millisecond value %d out of range (0-59999)", t.millisecond)
 	}
 	if t.minute > 59 {
 		return nil, fmt.Errorf("minute value %d out of range (0-59)", t.minute)
 	}
-	// 分配3个字节
 	frame = make([]byte, 3)
-	// 第1-2字节: 毫秒 (根据大小端)
-	if t.order == binary.LittleEndian {
-		// 小端: 低字节在前
-		frame[0] = byte(t.millisecond & 0xFF)        // 低字节
-		frame[1] = byte((t.millisecond >> 8) & 0xFF) // 高字节
-	} else {
-		// 大端: 高字节在前
-		frame[0] = byte((t.millisecond >> 8) & 0xFF) // 高字节
-		frame[1] = byte(t.millisecond & 0xFF)        // 低字节
-	}
-	// 第3字节: 分钟 + 标志位
-	// bit 0-5: 分钟值 (6位)
-	// bit 6: 保留位 (RES)
-	// bit 7: 无效标志 (IV)
-	thirdByte := t.minute & 0x3F // 分钟值放入低6位
+	frame[0] = byte(t.millisecond & 0xFF)
+	frame[1] = byte((t.millisecond >> 8) & 0xFF)
+	thirdByte := t.minute & 0x3F
 	if t.iv {
-		thirdByte |= 0x80 // 设置bit7 (IV)
+		thirdByte |= 0x80
 	}
 	frame[2] = thirdByte
-
 	return frame, nil
 }

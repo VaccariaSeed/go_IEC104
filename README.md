@@ -20,7 +20,7 @@ A Go library for **IEC 104** .
 ### 安装
 
 ```bash
-go get github.com/VaccariaSeed/go_IEC104
+go get github.com/VedrLabs/go_IEC104
 ```
 
 要求：Go 1.25+（以 `go.mod` 为准）。
@@ -30,7 +30,7 @@ go get github.com/VaccariaSeed/go_IEC104
 | 包 | 作用 |
 |----|------|
 | `server` | 从站：监听、接入、绑定网络/消息处理器 |
-| `client` | 主站：拨号、自动 STARTDT、`Send(ctx)` |
+| `client` | 主站：拨号、`StartDT`/`StopDT`/`TestFR`、`Send(ctx)` |
 | `session` | 会话核心：`ParamVehicle`、`MessageHandler`、序号与调度 |
 | `protocol` | APCI/APDU、`FrameCtx`、序号 `Seq`、传送原因等 |
 | `protocol/ASDU` | 各类 ASDU |
@@ -45,20 +45,17 @@ import (
 	"encoding/binary"
 	"log"
 
-	"github.com/VaccariaSeed/go_IEC104/protocol"
-	"github.com/VaccariaSeed/go_IEC104/protocol/ASDU"
-	"github.com/VaccariaSeed/go_IEC104/server"
-	"github.com/VaccariaSeed/go_IEC104/session"
+	"github.com/VedrLabs/go_IEC104/protocol"
+	"github.com/VedrLabs/go_IEC104/protocol/ASDU"
+	"github.com/VedrLabs/go_IEC104/server"
+	"github.com/VedrLabs/go_IEC104/session"
 )
 
 type myHandler struct {
-	// 嵌入或自行实现 session.MessageHandler 全部方法
+	session.NoopMessageHandler // 嵌入空实现，只覆盖关心的方法
 }
 
-func (h *myHandler) ReceivedSFrameHandle(peerCode string, lsb, msb byte, ctx *protocol.FrameCtx) {}
-func (h *myHandler) ReceivedUFrameHandle(peerCode string, param *protocol.UParam, ctx *protocol.FrameCtx) {}
-
-func (h *myHandler) Received_M_SP_NA_1(peerCode string, sess *session.Session, vehicle *session.ParamVehicle, asdu *ASDU.M_SP_NA_1, ctx *protocol.FrameCtx) {
+func (h *myHandler) Received_M_SP_NA_1(sess *session.Session, vehicle *session.ParamVehicle, asdu *ASDU.M_SP_NA_1, ctx *protocol.FrameCtx) {
 	pub := vehicle.ObtainPublicAddr()
 	cause, pn, test, err := vehicle.ObtainCause()
 	_ = pub
@@ -68,13 +65,11 @@ func (h *myHandler) Received_M_SP_NA_1(peerCode string, sess *session.Session, v
 	_ = err
 	for asdu.Next() {
 		ioa, siq := asdu.ObtainNext()
-		log.Printf("peer=%s ioa=%v siq=%v", peerCode, ioa, siq)
+		log.Printf("peer=%s ioa=%v siq=%v", sess.PeerCode(), ioa, siq)
 	}
 	// 需要回复时：在回调给的空 ctx 上组帧 → Activate → sess.Send（详见「FrameCtx 使用教程」）
 	// _ = sess.Send(ctx.BindCOT(protocol.COTSpont, 0, 0, 0, true).BindPublicAddr(pub).M_SP_NA_1(...).Activate())
 }
-
-// ……其余 Received_* 方法需全部实现（可先空实现）……
 
 func main() {
 	srv := server.BuildIEC104Server(2404, 1)
@@ -103,8 +98,8 @@ import (
 	"log"
 	"time"
 
-	"github.com/VaccariaSeed/go_IEC104/client"
-	"github.com/VaccariaSeed/go_IEC104/protocol"
+	"github.com/VedrLabs/go_IEC104/client"
+	"github.com/VedrLabs/go_IEC104/protocol"
 )
 
 type myHandler struct{}
@@ -115,10 +110,14 @@ func main() {
 	c := client.BuildIEC104Client("127.0.0.1", 2404, 1)
 	c.BindMessageHandler(&myHandler{})
 
-	if err := c.Open(); err != nil { // Dial + STARTDT act + EnableData
+	if err := c.Open(); err != nil { // dial + receive only
 		log.Fatal(err)
 	}
 	defer c.Close()
+
+	if err := c.StartDT(); err != nil {
+		log.Fatal(err)
+	}
 
 	// 总召唤（类型 100）
 	ctx := c.BuildFrameCtx().
@@ -304,18 +303,17 @@ func (h *myHandler) Received_C_IC_NA_1(peerCode string, sess *session.Session, v
 每个回调签名统一为：
 
 ```text
-Received_XXX(peerCode string, sess *session.Session, vehicle *ParamVehicle, asdu *ASDU.XXX, ctx *protocol.FrameCtx)
+Received_XXX(sess *session.Session, vehicle *ParamVehicle, asdu *ASDU.XXX, ctx *protocol.FrameCtx)
 ```
 
-- `peerCode`：对端标识（接入/拨号时由 `NetworkHandler` 分配）  
-- `sess`：当前会话，回复时 `sess.Send(ctx.….Activate())`  
+- `sess`：当前会话（`PeerCode()` 为对端标识）；回复时 `sess.Send(ctx.….Activate())`  
 - `vehicle`：控制域拆分结果、传送原因、公共地址等（`ObtainCause` / `ObtainPublicAddr` / `ObtainControl`）  
 - `asdu`：已解码的 ASDU，用 `for asdu.Next() { asdu.ObtainNext() }` 迭代信息对象  
 - `ctx`：组回复帧用；**不会**在 `schedule` 末尾自动发送，需业务自行 `Send`  
 
 另有 `ReceivedSFrameHandle` / `ReceivedUFrameHandle`（同样带 `sess`）。
 
-> 实现时需实现接口中的**全部**方法；可用空方法体占位，或参考 `text/server_test.go`。
+> 推荐嵌入 `session.NoopMessageHandler`，只覆盖关心的 `Received_*` / 钩子方法。
 
 ### NetworkHandler
 
@@ -332,15 +330,15 @@ Received_XXX(peerCode string, sess *session.Session, vehicle *ParamVehicle, asdu
 | 方法 | 含义 |
 |------|------|
 | `DialErrorHandle` | 拨号失败 |
-| `AfterConnect` | 拨号成功后是否接受，并返回 `serverCode` |
 | `ListenErrorHandle` | 收包出错；返回 `true` 则关闭连接 |
 
 不绑定则使用各自的 `DefaultNetworkHandler`。
 
 ### 会话与 APCI（简要）
 
-- 主站 `Open()` 后发送 `STARTDT act`，并 `EnableData()`  
+- 主站 `Open()` 仅建连；需显式 `StartDT()`（不等待 Con）；Con 后由 Seq 启用数据传输  
 - 从站收到 `STARTDT act` 后由 `Seq` 自动回 `con`  
+- 可用 `BindSeqConfig(k, w, t2)`；Server 可用 `Session(peerCode)` / `Sessions()`  
 - I 帧序号、窗口 `k`/`w`、收满 w 或 t2 超时发 S，均在 `session`/`protocol.Seq` 内完成  
 - 业务组 ASDU 后必须 `Activate()`，再 `Send(ctx)`；可用 `Result()` 查发送结果  
 - APCI 自动 S/U 由会话内部完成，不经过 `Activate`
@@ -387,7 +385,7 @@ go test ./...
 ### Install
 
 ```bash
-go get github.com/VaccariaSeed/go_IEC104
+go get github.com/VedrLabs/go_IEC104
 ```
 
 Requires Go 1.25+ (see `go.mod`).
@@ -397,7 +395,7 @@ Requires Go 1.25+ (see `go.mod`).
 | Package | Role |
 |---------|------|
 | `server` | Controlled station: listen, accept, handlers |
-| `client` | Controlling station: dial, STARTDT, `Send(ctx)` |
+| `client` | Controlling station: dial, `StartDT`/`StopDT`/`TestFR`, `Send(ctx)` |
 | `session` | Shared session: handlers, sequence, schedule |
 | `protocol` | APCI/APDU, `FrameCtx`, `Seq`, causes |
 | `protocol/ASDU` | ASDU types |
@@ -424,7 +422,7 @@ APCI replies (S/U, STARTDT confirm, etc.) are handled inside the session. Applic
 ```go
 c := client.BuildIEC104Client("127.0.0.1", 2404, 1)
 c.BindMessageHandler(&myHandler{})
-if err := c.Open(); err != nil { // dial + STARTDT act
+if err := c.Open(); err != nil { // dial + receive only
     log.Fatal(err)
 }
 defer c.Close()
@@ -569,30 +567,29 @@ See `protocol/ctx_test.go` for more encode samples.
 Defined in `session` (aliased by `server` / `client`):
 
 ```text
-Received_XXX(peerCode, sess *session.Session, vehicle, asdu, ctx)
+Received_XXX(sess *session.Session, vehicle, asdu, ctx)
 ```
 
-- `peerCode` — peer id from `NetworkHandler`  
-- `sess` — current session; reply with `sess.Send(ctx.….Activate())`  
+- `sess` — current session (`PeerCode()` for peer id); reply with `sess.Send(ctx.….Activate())`  
 - `vehicle` — cause / CA / control octets (`ObtainCause`, `ObtainPublicAddr`, …)  
 - `asdu` — decoded ASDU; iterate with `for asdu.Next() { asdu.ObtainNext() }`  
 - `ctx` — reply builder; **not** auto-sent by `schedule`  
 
 Also implement `ReceivedSFrameHandle` and `ReceivedUFrameHandle` (with `sess`).  
-All interface methods must be implemented (see `text/server_test.go` for stubs).
+Embed `session.NoopMessageHandler` and override only the methods you care about.
 
 ### NetworkHandler
 
 **Server:** `AcceptErrorHandle`, `AllowConnect`, `ClientListenErrorHandle`  
-**Client:** `DialErrorHandle`, `AfterConnect`, `ListenErrorHandle`  
+**Client:** `DialErrorHandle`, `ListenErrorHandle`, `SeqFatalHandle`  
 
 Defaults are provided if you do not bind a custom handler.
 
 ### Session / APCI notes
 
-- Client `Open()` sends `STARTDT act` and enables data transfer  
+- Client `Open()` only dials; call `StartDT()` explicitly  
 - Server auto-confirms STARTDT / TestFR via `Seq`  
-- Sequence numbers and S-frame acknowledgements are managed internally  
+- `BindSeqConfig` / Server `Session`/`Sessions` available  
 - Business frames require `Activate()` before `Send`; use `Result()` for the outcome  
 - Defaults: `k=12`, `w=8`, `t2=10s`
 
