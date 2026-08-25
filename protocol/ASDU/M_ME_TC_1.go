@@ -1,8 +1,8 @@
 package ASDU
 
 import (
-	"github.com/VaccariaSeed/go_IEC104/protocol/object"
-	"github.com/VaccariaSeed/go_IEC104/read_buf"
+	"github.com/VedrLabs/go_IEC104/protocol/object"
+	"github.com/VedrLabs/go_IEC104/read_buf"
 	"time"
 )
 

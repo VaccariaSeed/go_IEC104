@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/VaccariaSeed/go_IEC104/protocol"
+	"github.com/VedrLabs/go_IEC104/protocol"
 )
 
 // Session 一条 IEC104 TCP 会话（主站/从站共用收发与调度）

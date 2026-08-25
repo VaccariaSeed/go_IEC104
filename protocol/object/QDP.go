@@ -1,6 +1,6 @@
 package object
 
-import "github.com/VaccariaSeed/go_IEC104/read_buf"
+import "github.com/VedrLabs/go_IEC104/read_buf"
 
 var _ Objector = (*QDP)(nil)
 

@@ -6,8 +6,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/VaccariaSeed/go_IEC104/protocol/ASDU"
-	"github.com/VaccariaSeed/go_IEC104/read_buf"
+	"github.com/VedrLabs/go_IEC104/protocol/ASDU"
+	"github.com/VedrLabs/go_IEC104/read_buf"
 )
 
 const (

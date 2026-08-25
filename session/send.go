@@ -3,7 +3,7 @@ package session
 import (
 	"fmt"
 
-	"github.com/VaccariaSeed/go_IEC104/protocol"
+	"github.com/VedrLabs/go_IEC104/protocol"
 )
 
 // Send 发送已激活的 FrameCtx：按控制域走 I/S/U；结果写入 ctx.Result()

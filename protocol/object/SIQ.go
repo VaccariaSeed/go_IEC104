@@ -1,7 +1,7 @@
 package object
 
 import (
-	"github.com/VaccariaSeed/go_IEC104/read_buf"
+	"github.com/VedrLabs/go_IEC104/read_buf"
 )
 
 var _ Objector = (*SIQ)(nil)

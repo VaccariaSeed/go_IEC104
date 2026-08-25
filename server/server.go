@@ -8,8 +8,8 @@ import (
 	"net"
 	"sync"
 
-	"github.com/VaccariaSeed/go_IEC104/protocol"
-	"github.com/VaccariaSeed/go_IEC104/session"
+	"github.com/VedrLabs/go_IEC104/protocol"
+	"github.com/VedrLabs/go_IEC104/session"
 )
 
 const twoSize = 2

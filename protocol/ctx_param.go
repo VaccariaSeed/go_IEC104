@@ -3,7 +3,7 @@ package protocol
 import (
 	"time"
 
-	"github.com/VaccariaSeed/go_IEC104/protocol/ASDU"
+	"github.com/VedrLabs/go_IEC104/protocol/ASDU"
 )
 
 // M_SP_NA_1 创建M_SP_NA_1 不带时标的单点信息

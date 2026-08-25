@@ -1,8 +1,8 @@
 package session
 
 import (
-	"github.com/VaccariaSeed/go_IEC104/protocol"
-	"github.com/VaccariaSeed/go_IEC104/protocol/ASDU"
+	"github.com/VedrLabs/go_IEC104/protocol"
+	"github.com/VedrLabs/go_IEC104/protocol/ASDU"
 )
 
 // MessageHandler 消息处理器
