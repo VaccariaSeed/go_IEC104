@@ -8,10 +8,16 @@ import (
 
 // Send 发送已激活的 FrameCtx：按控制域走 I/S/U；结果写入 ctx.Result()
 func (s *Session) Send(ctx *protocol.FrameCtx) (err error) {
+	var tx []byte
 	if ctx == nil {
-		return fmt.Errorf("frame ctx is nil")
+		err = fmt.Errorf("frame ctx is nil")
+		s.notifySendErr(nil, err)
+		return err
 	}
-	defer func() { ctx.SetResult(err) }()
+	defer func() {
+		ctx.SetResult(err)
+		s.notifySendErr(tx, err)
+	}()
 
 	if !ctx.IsActivated() {
 		err = fmt.Errorf("frame ctx not activated")
@@ -24,11 +30,11 @@ func (s *Session) Send(ctx *protocol.FrameCtx) (err error) {
 	}
 	switch ft {
 	case protocol.IFrame:
-		err = s.sendI(ctx)
+		tx, err = s.sendI(ctx)
 	case protocol.SFrame:
-		err = s.sendSFromCtx(ctx)
+		tx, err = s.sendSFromCtx(ctx)
 	case protocol.UFrame:
-		err = s.sendUFromCtx(ctx)
+		tx, err = s.sendUFromCtx(ctx)
 	default:
 		err = fmt.Errorf("unknown frame type")
 	}
@@ -47,7 +53,7 @@ func (s *Session) resolveFrameType(ctx *protocol.FrameCtx) (protocol.FrameType, 
 }
 
 // sendI 发送 I 帧（需已 Activate；序号由 Seq 分配）
-func (s *Session) sendI(ctx *protocol.FrameCtx) error {
+func (s *Session) sendI(ctx *protocol.FrameCtx) (tx []byte, err error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 
@@ -55,27 +61,28 @@ func (s *Session) sendI(ctx *protocol.FrameCtx) error {
 	conn, seq := s.conn, s.seq
 	s.mu.Unlock()
 	if conn == nil || seq == nil {
-		return fmt.Errorf("session not connected")
+		return nil, fmt.Errorf("session not connected")
 	}
 
 	send, err := seq.PrepareSendI()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	ctx.ApplyISeq(send.NS, send.NR)
 	frame, err := ctx.Encode()
 	if err != nil {
-		return err
+		return nil, err
 	}
+	tx = frame
 	s.notifySending(frame)
 	if _, err = conn.Write(frame); err != nil {
-		return err
+		return tx, err
 	}
 	seq.CommitSendI()
-	return nil
+	return nil, nil
 }
 
-func (s *Session) sendSFromCtx(ctx *protocol.FrameCtx) error {
+func (s *Session) sendSFromCtx(ctx *protocol.FrameCtx) (tx []byte, err error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 
@@ -83,22 +90,23 @@ func (s *Session) sendSFromCtx(ctx *protocol.FrameCtx) error {
 	conn, seq := s.conn, s.seq
 	s.mu.Unlock()
 	if conn == nil || seq == nil {
-		return fmt.Errorf("session not connected")
+		return nil, fmt.Errorf("session not connected")
 	}
 
 	frame, err := ctx.Encode()
 	if err != nil {
-		return err
+		return nil, err
 	}
+	tx = frame
 	s.notifySending(frame)
 	if _, err = conn.Write(frame); err != nil {
-		return err
+		return tx, err
 	}
 	seq.CommitSendS()
-	return nil
+	return nil, nil
 }
 
-func (s *Session) sendUFromCtx(ctx *protocol.FrameCtx) error {
+func (s *Session) sendUFromCtx(ctx *protocol.FrameCtx) (tx []byte, err error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 
@@ -106,21 +114,22 @@ func (s *Session) sendUFromCtx(ctx *protocol.FrameCtx) error {
 	conn := s.conn
 	s.mu.Unlock()
 	if conn == nil {
-		return fmt.Errorf("session not connected")
+		return nil, fmt.Errorf("session not connected")
 	}
 
 	frame, err := ctx.Encode()
 	if err != nil {
-		return err
+		return nil, err
 	}
+	tx = frame
 	s.notifySending(frame)
 	if _, err = conn.Write(frame); err != nil {
-		return err
+		return tx, err
 	}
-	return nil
+	return nil, nil
 }
 
-// sendS APCI 自动确认用（不经 Activate）
+// sendS APCI 自动确认用（不经 Activate）；失败时 notifySendErr
 func (s *Session) sendS(nr uint16) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
@@ -129,19 +138,22 @@ func (s *Session) sendS(nr uint16) error {
 	conn, seq := s.conn, s.seq
 	s.mu.Unlock()
 	if conn == nil || seq == nil {
-		return fmt.Errorf("session not connected")
+		err := fmt.Errorf("session not connected")
+		s.notifySendErr(nil, err)
+		return err
 	}
 
 	frame := protocol.EncodeSFrame(nr)
 	s.notifySending(frame)
 	if _, err := conn.Write(frame); err != nil {
+		s.notifySendErr(frame, err)
 		return err
 	}
 	seq.CommitSendS()
 	return nil
 }
 
-// sendU APCI 自动 U 帧（不经 Activate）
+// sendU APCI 自动 U 帧（不经 Activate）；失败时 notifySendErr
 func (s *Session) sendU(u protocol.UFunc) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
@@ -150,12 +162,15 @@ func (s *Session) sendU(u protocol.UFunc) error {
 	conn := s.conn
 	s.mu.Unlock()
 	if conn == nil {
-		return fmt.Errorf("session not connected")
+		err := fmt.Errorf("session not connected")
+		s.notifySendErr(nil, err)
+		return err
 	}
 
 	frame := protocol.EncodeUFrame(u)
 	s.notifySending(frame)
 	if _, err := conn.Write(frame); err != nil {
+		s.notifySendErr(frame, err)
 		return err
 	}
 	return nil
@@ -173,9 +188,9 @@ func (s *Session) notifySending(frame []byte) {
 func (s *Session) applySeqResult(res protocol.Result) bool {
 	switch res.Kind {
 	case protocol.ActionSendS:
-		_ = s.sendS(res.ReplyNR)
+		_ = s.sendS(res.ReplyNR) // 失败已在 sendS 内 notifySendErr
 	case protocol.ActionSendU:
-		_ = s.sendU(res.ReplyU)
+		_ = s.sendU(res.ReplyU) // 失败已在 sendU 内 notifySendErr
 	case protocol.ActionDie:
 		shouldClose := true
 		if s.onSeqFatal != nil && s.conn != nil {

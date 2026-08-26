@@ -152,7 +152,7 @@ func (i *IEC104Server) Open() (err error) {
 
 					codec := protocol.NewIEC104Protocol(i.cotSize, i.publicAddrSize, i.publicAddrOrder, i.ioaSize, i.ioaOrder)
 					var sess *session.Session
-					sess = session.New(clientCode, codec, conn, i.msgHandle, i.networkHandle.ClientListenErrorHandle, i.networkHandle.ClientSeqFatalHandle, func(peerCode string) {
+					sess = session.New(clientCode, codec, conn, i.msgHandle, i.networkHandle.ClientListenErrorHandle, i.networkHandle.ClientSeqFatalHandle, i.networkHandle.ClientSendErrorHandle, func(peerCode string) {
 						i.lock.Lock()
 						defer i.lock.Unlock()
 						if cur, ok := i.clientSlice[peerCode]; ok && cur == sess {

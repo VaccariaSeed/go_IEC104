@@ -136,7 +136,7 @@ func (c *IEC104Client) Open() (err error) {
 	}
 
 	codec := protocol.NewIEC104Protocol(c.cotSize, c.publicAddrSize, c.publicAddrOrder, c.ioaSize, c.ioaOrder)
-	sess := session.New(addr, codec, conn, c.msgHandle, c.networkHandle.ListenErrorHandle, c.networkHandle.SeqFatalHandle, nil, protocol.Config{
+	sess := session.New(addr, codec, conn, c.msgHandle, c.networkHandle.ListenErrorHandle, c.networkHandle.SeqFatalHandle, c.networkHandle.SendErrorHandle, nil, protocol.Config{
 		K:  c.seqK,
 		W:  c.seqW,
 		T2: c.seqT2,

@@ -48,6 +48,14 @@ func (s *Session) schedule() (ctx *protocol.FrameCtx) {
 	return
 }
 
+// flushActivatedCtx handler 返回后，若 ctx 已 Activate 则自动 Send
+func (s *Session) flushActivatedCtx(ctx *protocol.FrameCtx) {
+	if ctx == nil || !ctx.IsActivated() {
+		return
+	}
+	_ = s.Send(ctx)
+}
+
 // 收到了I帧
 func (s *Session) receivedIFrameHandle() (ctx *protocol.FrameCtx) {
 	vehicle := &ParamVehicle{}

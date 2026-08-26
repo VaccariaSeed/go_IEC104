@@ -26,12 +26,13 @@ type Session struct {
 	handler     MessageHandler
 	onListenErr func(remoteAddr string, err error) bool
 	onSeqFatal  func(remoteAddr string, err error) bool
+	onSendErr   func(remoteAddr string, tx []byte, err error)
 	onClosed    func(peerCode string)
 }
 
 // New 创建会话（尚未 Start）；cfg 中 k/w<=0、T2 未设时由 Seq 使用默认值。
 // onClosed 在 Close 成功释放资源后回调一次（可为 nil）；勿在回调里再调本 Session.Close。
-func New(peerCode string, codec *protocol.IEC104Protocol, conn net.Conn, handler MessageHandler, onListenErr func(remoteAddr string, err error) bool, onSeqFatal func(remoteAddr string, err error) bool, onClosed func(peerCode string), cfg protocol.Config) *Session {
+func New(peerCode string, codec *protocol.IEC104Protocol, conn net.Conn, handler MessageHandler, onListenErr func(remoteAddr string, err error) bool, onSeqFatal func(remoteAddr string, err error) bool, onSendErr func(remoteAddr string, tx []byte, err error), onClosed func(peerCode string), cfg protocol.Config) *Session {
 	if cfg.T2 == 0 {
 		cfg.T2 = protocol.DefaultT2
 	}
@@ -44,6 +45,7 @@ func New(peerCode string, codec *protocol.IEC104Protocol, conn net.Conn, handler
 		handler:     handler,
 		onListenErr: onListenErr,
 		onSeqFatal:  onSeqFatal,
+		onSendErr:   onSendErr,
 		onClosed:    onClosed,
 	}
 }
@@ -140,9 +142,26 @@ func (s *Session) listen(ctx context.Context) {
 					s.handler.OnAPDUReceived(s, apdu)
 				}
 			}
-			s.schedule()
+			s.flushActivatedCtx(s.schedule())
 		}
 	}
+}
+
+// notifySendErr Send 失败时通知 NetworkHandler（不 Close）；tx 为从 0x68 起的完整待发报文拷贝，未编码则为 nil
+func (s *Session) notifySendErr(tx []byte, err error) {
+	if err == nil || s.onSendErr == nil {
+		return
+	}
+	remoteAddr := ""
+	s.mu.Lock()
+	if s.conn != nil {
+		remoteAddr = s.conn.RemoteAddr().String()
+	}
+	s.mu.Unlock()
+	if len(tx) > 0 {
+		tx = append([]byte(nil), tx...)
+	}
+	s.onSendErr(remoteAddr, tx, err)
 }
 
 // Close 关闭会话（可重复调用；onClosed 最多触发一次）

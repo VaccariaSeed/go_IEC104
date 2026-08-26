@@ -67,8 +67,8 @@ func (h *myHandler) Received_M_SP_NA_1(sess *session.Session, vehicle *session.P
 		ioa, siq := asdu.ObtainNext()
 		log.Printf("peer=%s ioa=%v siq=%v", sess.PeerCode(), ioa, siq)
 	}
-	// 需要回复时：在回调给的空 ctx 上组帧 → Activate → sess.Send（详见「FrameCtx 使用教程」）
-	// _ = sess.Send(ctx.BindCOT(protocol.COTSpont, 0, 0, 0, true).BindPublicAddr(pub).M_SP_NA_1(...).Activate())
+	// 需要回复时：在回调给的空 ctx 上组帧 → Activate（schedule 末尾自动 Send，详见「FrameCtx 使用教程」）
+	// ctx.BindCOT(protocol.COTSpont, 0, 0, 0, true).BindPublicAddr(pub).M_SP_NA_1(...).Activate()
 }
 
 func main() {
@@ -183,7 +183,7 @@ _ = srv.BindIOASize(3, binary.LittleEndian)
 |------|------|
 | 主站主动发 | `c.BuildFrameCtx()` |
 | 从站/会话主动发 | `sess.BuildFrameCtx()` |
-| Handler 回调里回复 | 参数里的 `ctx`（调度层已 `BuildFrameCtx()`，空上下文，可直接组回复） |
+| Handler 回调里回复 | 参数里的 `ctx`（调度层已 `BuildFrameCtx()`，组帧后 `Activate()` 即可，**不必** `Send`） |
 
 每次发送应使用**新**的 ctx（或回调给的那一个）；不要跨连接复用，也不要在已 `Send` 过的 ctx 上继续叠另一帧。
 
@@ -281,16 +281,15 @@ _ = c.Send(c.BuildFrameCtx().BindUFrame(protocol.UTestFRAct).Activate())
 | `SetResult` | 仅发送层 | 业务不要写 |
 | `ApplyISeq` | 仅发送层 | 业务不要写 N(S)/N(R) |
 
-Handler 内回复示例（总召确认）：
+Handler 内回复示例（总召确认；`Activate()` 后由 `schedule` 自动 `Send`）：
 
 ```go
-func (h *myHandler) Received_C_IC_NA_1(peerCode string, sess *session.Session, vehicle *session.ParamVehicle, asdu *ASDU.C_IC_NA_1, ctx *protocol.FrameCtx) {
+func (h *myHandler) Received_C_IC_NA_1(sess *session.Session, vehicle *session.ParamVehicle, asdu *ASDU.C_IC_NA_1, ctx *protocol.FrameCtx) {
 	ca := vehicle.ObtainPublicAddr()
-	_ = sess.Send(ctx.
-		BindCOT(protocol.COTActCon, 0, 0, 0, true).
+	ctx.BindCOT(protocol.COTActCon, 0, 0, 0, true).
 		BindPublicAddr(ca).
 		C_IC_NA_1(0, 20).
-		Activate())
+		Activate()
 }
 ```
 
@@ -306,10 +305,10 @@ func (h *myHandler) Received_C_IC_NA_1(peerCode string, sess *session.Session, v
 Received_XXX(sess *session.Session, vehicle *ParamVehicle, asdu *ASDU.XXX, ctx *protocol.FrameCtx)
 ```
 
-- `sess`：当前会话（`PeerCode()` 为对端标识）；回复时 `sess.Send(ctx.….Activate())`  
+- `sess`：当前会话（`PeerCode()` 为对端标识）；多帧上送或 handler 外主动发时用 `sess.BuildFrameCtx()` + `Send`  
 - `vehicle`：控制域拆分结果、传送原因、公共地址等（`ObtainCause` / `ObtainPublicAddr` / `ObtainControl`）  
 - `asdu`：已解码的 ASDU，用 `for asdu.Next() { asdu.ObtainNext() }` 迭代信息对象  
-- `ctx`：组回复帧用；**不会**在 `schedule` 末尾自动发送，需业务自行 `Send`  
+- `ctx`：组回复帧用；`Activate()` 后 **`schedule` 末尾自动 `Send`**，handler 内不必写 `Send`  
 
 另有 `ReceivedSFrameHandle` / `ReceivedUFrameHandle`（同样带 `sess`）。
 
@@ -324,6 +323,8 @@ Received_XXX(sess *session.Session, vehicle *ParamVehicle, asdu *ASDU.XXX, ctx *
 | `AcceptErrorHandle` | `Accept` 出错；返回 `true` 则关闭整个 Server |
 | `AllowConnect` | 是否允许该连接，并返回 `clientCode` |
 | `ClientListenErrorHandle` | 收包出错；返回 `true` 则关闭该连接 |
+| `ClientSeqFatalHandle` | Seq/APCI 严重错误；返回 `true` 则关闭该连接 |
+| `ClientSendErrorHandle` | 发送失败通知（含业务 `Send`、schedule 自动发送、内部自动 `sendS`/`sendU`）；`tx` 为从 `0x68` 起的完整报文（未编码则为 nil）；**不**关闭连接 |
 
 **主站 `client.NetworkHandler`**
 
@@ -331,19 +332,65 @@ Received_XXX(sess *session.Session, vehicle *ParamVehicle, asdu *ASDU.XXX, ctx *
 |------|------|
 | `DialErrorHandle` | 拨号失败 |
 | `ListenErrorHandle` | 收包出错；返回 `true` 则关闭连接 |
+| `SeqFatalHandle` | Seq/APCI 严重错误；返回 `true` 则关闭连接 |
+| `SendErrorHandle` | 发送失败通知（含业务 `Send`、内部自动 S 确认 / U 回复）；`tx` 为从 `0x68` 起的完整报文（未编码则为 nil）；**不**关闭连接；默认实现会打印 `tx` 十六进制 |
 
-不绑定则使用各自的 `DefaultNetworkHandler`。
+不绑定则使用各自的 `DefaultNetworkHandler`。`SendErrorHandle` / `ClientSendErrorHandle` 与 `ListenErrorHandle` 不同：**仅通知**，不会因回调而自动断连。
 
 ### 会话与 APCI（简要）
 
 - 主站 `Open()` 仅建连；需显式 `StartDT()`（不等待 Con）；Con 后由 Seq 启用数据传输  
 - 从站收到 `STARTDT act` 后由 `Seq` 自动回 `con`  
-- 可用 `BindSeqConfig(k, w, t2)`；Server 可用 `Session(peerCode)` / `Sessions()`  
+- Server 可用 `Session(peerCode)` / `Sessions()`  
 - I 帧序号、窗口 `k`/`w`、收满 w 或 t2 超时发 S，均在 `session`/`protocol.Seq` 内完成  
-- 业务组 ASDU 后必须 `Activate()`，再 `Send(ctx)`；可用 `Result()` 查发送结果  
+- 业务组 ASDU 后必须 `Activate()`；handler 内由 `schedule` 自动 `Send`，handler 外主动发用 `Send(ctx)`；可用 `Result()` 查发送结果；发送失败（含内部 S/U 自动回复）触发 `SendErrorHandle` / `ClientSendErrorHandle`（不自动断连）  
 - APCI 自动 S/U 由会话内部完成，不经过 `Activate`
 
-默认：`k=12`，`w=8`，`t2=10s`。
+#### BindSeqConfig(k, w, t2)
+
+须在 **`Open()` 之前**调用（`client` / `server` 均可）。
+
+| 参数 | 含义 | 本库行为 |
+|------|------|----------|
+| **k** | 本端最多连续发出、且尚未被对端 S/I 捎带确认的 **I 帧**数 | 达到 k 时 `PrepareSendI` 失败（发送窗口满） |
+| **w** | 本端最多连续收到、且尚未向对端确认的 **I 帧**数 | 收满 w 帧后立即自动 **S 确认** |
+| **t2** | 收到 I 帧后，若仍未确认，超时发 **S 帧** | 读循环约每秒 `Tick`；超过 t2 触发 S |
+
+补充：
+
+- 本端发 I 帧成功时 **捎带 N(R)**，可替代单独 S 帧（`CommitSendI` 清接收确认计数）。
+- 链路 S/U 自动回复与业务 ASDU 无关，不经过 `Activate`。
+
+**默认（不调用 `BindSeqConfig`）：** `k=12`，`w=8`，`t2=10s`
+
+- 连续收 **8** 帧 I 后才发 S，或最后一帧 I 后 **最多约 10s** 发 S。
+- Client **只收不上送**、帧率低时，抓包可能较长时间看不到 S —— **符合设计**（例如只收到一帧 `M_SP_NA_1` 不会立刻 S）。
+
+**联调示例（每收一帧 I 就 S 确认）：**
+
+```go
+c := client.BuildIEC104Client("127.0.0.1", 2404, 1)
+if err := c.BindSeqConfig(12, 1, 10*time.Second); err != nil {
+    log.Fatal(err)
+}
+if err := c.Open(); err != nil {
+    log.Fatal(err)
+}
+```
+
+Server 同理：`srv.BindSeqConfig(12, 1, 10*time.Second)`（亦须在 `Open()` 前）。
+
+| 相对默认 `k=12,w=8,t2=10s` | 后果 |
+|---------------------------|------|
+| **w=1** | **每收 1 帧 I 立即发 S**；抓包直观，S 帧更频繁 |
+| **k=12**（不变） | 发送侧窗口与默认相同 |
+| **t2=10s**（不变） | 若已因 w=1 即时确认，t2 很少单独触发 |
+
+**取舍：**
+
+- 生产 / 连续上送：保留默认 **w=8**（少发 S，省带宽）。
+- 联调 / 纯监听主站：可用 **w=1**。
+- **k、w 宜与对端匹配**；单方过小可能导致对端序号错误或本端发送阻塞。
 
 ### ASDU 覆盖（摘要）
 
@@ -367,7 +414,7 @@ go test ./...
 
 1. `MessageHandler` 未绑定或实现不全会导致 panic / 编译失败。  
 2. 主站与从站的 COT/CA/IOA 尺寸与字节序必须一致。  
-3. 从站在 `MessageHandler` 里通过 `sess.Send(ctx.….Activate())` 主动上送/确认；主站用 `client.Send`。  
+3. 从站在 `MessageHandler` 里对 `ctx` 组帧并 `Activate()` 即可；多帧上送用 `sess.BuildFrameCtx()` + `Send`；主站用 `client.Send`。  
 4. 本库面向协议编解码与会话骨架，点表/业务库需自行实现。
 
 ---
@@ -462,7 +509,7 @@ Numeric objects (NVA, float, …) use **big-endian**. Time tags (CP16/CP24/CP56)
 |-----------|-----|
 | Controlling station (client) | `c.BuildFrameCtx()` |
 | Controlled station / session | `sess.BuildFrameCtx()` |
-| Reply inside a handler | the `ctx` argument (already a fresh `BuildFrameCtx()`) |
+| Reply inside a handler | the `ctx` argument (bind + `Activate()`; **no** `Send` in handler — flushed after `schedule`) |
 
 Use a **new** ctx per send (or the one passed into the handler). Do not reuse a ctx across connections or after it has already been sent as another frame.
 
@@ -547,16 +594,15 @@ Automatic APCI replies (STARTDT/TESTFR, …) use internal `sendS`/`sendU` and **
 | `Result()` | app | last `Send` error (same as return value) |
 | `SetResult` / `ApplyISeq` | send path only | do not set N(S)/N(R) yourself |
 
-Handler reply example:
+Handler reply example (`Activate()` only; `schedule` auto-sends):
 
 ```go
-func (h *myHandler) Received_C_IC_NA_1(peerCode string, sess *session.Session, vehicle *session.ParamVehicle, asdu *ASDU.C_IC_NA_1, ctx *protocol.FrameCtx) {
+func (h *myHandler) Received_C_IC_NA_1(sess *session.Session, vehicle *session.ParamVehicle, asdu *ASDU.C_IC_NA_1, ctx *protocol.FrameCtx) {
 	ca := vehicle.ObtainPublicAddr()
-	_ = sess.Send(ctx.
-		BindCOT(protocol.COTActCon, 0, 0, 0, true).
+	ctx.BindCOT(protocol.COTActCon, 0, 0, 0, true).
 		BindPublicAddr(ca).
 		C_IC_NA_1(0, 20).
-		Activate())
+		Activate()
 }
 ```
 
@@ -570,18 +616,20 @@ Defined in `session` (aliased by `server` / `client`):
 Received_XXX(sess *session.Session, vehicle, asdu, ctx)
 ```
 
-- `sess` — current session (`PeerCode()` for peer id); reply with `sess.Send(ctx.….Activate())`  
+- `sess` — current session (`PeerCode()` for peer id); multi-frame or out-of-handler sends use `sess.BuildFrameCtx()` + `Send`  
 - `vehicle` — cause / CA / control octets (`ObtainCause`, `ObtainPublicAddr`, …)  
 - `asdu` — decoded ASDU; iterate with `for asdu.Next() { asdu.ObtainNext() }`  
-- `ctx` — reply builder; **not** auto-sent by `schedule`  
+- `ctx` — reply builder; after `Activate()`, **`schedule` auto-sends** — no `Send` in handler  
 
 Also implement `ReceivedSFrameHandle` and `ReceivedUFrameHandle` (with `sess`).  
 Embed `session.NoopMessageHandler` and override only the methods you care about.
 
 ### NetworkHandler
 
-**Server:** `AcceptErrorHandle`, `AllowConnect`, `ClientListenErrorHandle`  
-**Client:** `DialErrorHandle`, `ListenErrorHandle`, `SeqFatalHandle`  
+**Server:** `AcceptErrorHandle`, `AllowConnect`, `ClientListenErrorHandle`, `ClientSeqFatalHandle`, `ClientSendErrorHandle`  
+**Client:** `DialErrorHandle`, `ListenErrorHandle`, `SeqFatalHandle`, `SendErrorHandle`  
+
+`SendErrorHandle` / `ClientSendErrorHandle` notify on send failures from business `Send(ctx)`, schedule auto-flush, and internal `sendS`/`sendU` (S ack, STARTDT/TESTFR U replies), with `tx` (full frame from `0x68`, `nil` if not yet encoded); they do **not** close the connection. Default handlers log `tx` as hex.
 
 Defaults are provided if you do not bind a custom handler.
 
@@ -589,9 +637,55 @@ Defaults are provided if you do not bind a custom handler.
 
 - Client `Open()` only dials; call `StartDT()` explicitly  
 - Server auto-confirms STARTDT / TestFR via `Seq`  
-- `BindSeqConfig` / Server `Session`/`Sessions` available  
-- Business frames require `Activate()` before `Send`; use `Result()` for the outcome  
-- Defaults: `k=12`, `w=8`, `t2=10s`
+- Server `Session(peerCode)` / `Sessions()` available  
+- Business frames require `Activate()`; handlers rely on `schedule` auto-send; use `Send(ctx)` outside handlers; use `Result()` for the outcome; send failures (including internal S/U auto-replies) invoke `SendErrorHandle` / `ClientSendErrorHandle` (no auto-close)  
+- Automatic link-layer S/U bypass `Activate`
+
+#### BindSeqConfig(k, w, t2)
+
+Call **before** `Open()` on both `client` and `server`.
+
+| Param | Meaning | Library behavior |
+|-------|---------|------------------|
+| **k** | Max outbound **I-format** APDUs not yet acked by peer (S or piggybacked N(R)) | `PrepareSendI` fails when window full |
+| **w** | Max inbound **I-format** APDUs not yet acked to peer | Auto **S-format** ack after **w** frames |
+| **t2** | Timeout to send **S** if receive ack still pending | ~1s polling via `Tick`; fire S after **t2** |
+
+Notes:
+
+- Outbound I-frames **piggyback N(R)** on success (`CommitSendI`), which can replace a standalone S.
+- Link S/U replies are unrelated to application ASDUs and do not use `Activate`.
+
+**Defaults (no `BindSeqConfig`):** `k=12`, `w=8`, `t2=10s`
+
+- S ack after **8** consecutive received I-frames, or up to **~10s** after the last I if still unacked.
+- A **client that only receives** (e.g. one `M_SP_NA_1`) may show **no S for a while** — expected.
+
+**Debug example (S ack after every received I):**
+
+```go
+c := client.BuildIEC104Client("127.0.0.1", 2404, 1)
+if err := c.BindSeqConfig(12, 1, 10*time.Second); err != nil {
+    log.Fatal(err)
+}
+if err := c.Open(); err != nil {
+    log.Fatal(err)
+}
+```
+
+Same for server: `srv.BindSeqConfig(12, 1, 10*time.Second)` before `Open()`.
+
+| vs default `k=12,w=8,t2=10s` | Effect |
+|-------------------------------|--------|
+| **w=1** | **S after every received I**; easier to see in captures, more S traffic |
+| **k=12** (unchanged) | Same send window as default |
+| **t2=10s** (unchanged) | Rarely triggers alone when w=1 already acks immediately |
+
+**Trade-offs:**
+
+- Production / bursty telemetry: keep default **w=8**.  
+- Debug / listen-only master: **w=1** is fine.  
+- **k** and **w** should match peer capabilities; too small on one side may cause seq errors or send blocking.
 
 ### ASDU coverage (summary)
 
@@ -612,7 +706,7 @@ See `protocol/ctx_test.go` for encode samples.
 
 1. Implement the full `MessageHandler` surface.  
 2. Peer size/endian settings must match.  
-3. Controlled station replies via `sess.Send(ctx.….Activate())` inside handlers; controlling station uses `client.Send`.  
+3. Controlled station: bind + `Activate()` on handler `ctx`; multi-frame via `sess.BuildFrameCtx()` + `Send`; controlling station uses `client.Send`.  
 4. Point tables and domain logic are out of scope for this library.
 
 ---
